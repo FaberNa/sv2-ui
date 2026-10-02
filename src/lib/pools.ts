@@ -129,9 +129,23 @@ export function knownPoolToConfig(pool: KnownPool, userIdentity = ''): PoolConfi
   };
 }
 
-export function createEmptyCustomPool(userIdentity = ''): PoolConfig {
+export const CUSTOM_POOL_BASE_NAME = 'Custom Pool';
+
+// Returns "Custom Pool", then "Custom Pool 2", "Custom Pool 3", ... using the
+// lowest number not already taken.
+export function getNextCustomPoolName(pools: Pick<PoolConfig, 'name'>[]): string {
+  const usedNames = new Set(pools.map((pool) => pool.name?.trim().toLowerCase()));
+  if (!usedNames.has(CUSTOM_POOL_BASE_NAME.toLowerCase())) return CUSTOM_POOL_BASE_NAME;
+
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${CUSTOM_POOL_BASE_NAME} ${suffix}`;
+    if (!usedNames.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+export function createEmptyCustomPool(userIdentity = '', name = CUSTOM_POOL_BASE_NAME): PoolConfig {
   return {
-    name: 'Custom Pool',
+    name,
     address: '',
     port: 3333,
     authority_public_key: '',
@@ -183,4 +197,21 @@ export function getKnownPoolForConfig(pool: Pick<PoolConfig, 'address' | 'port' 
   return ALL_KNOWN_POOLS.find((knownPool) => isSameTrustedPool(pool, knownPool)) ?? null;
 }
 
-
+// Indexes of all pools that share an address and port with another pool in the
+// list. Pools without an address yet are skipped, so empty custom pools don't count.
+export function getDuplicatePoolEndpointIndexes(
+  pools: Array<Pick<PoolConfig, 'address' | 'port'> | null | undefined>,
+): Set<number> {
+  const duplicates = new Set<number>();
+  pools.forEach((pool, index) => {
+    if (!pool?.address.trim()) return;
+    pools.forEach((other, otherIndex) => {
+      if (otherIndex <= index || !other?.address.trim()) return;
+      if (isDuplicatePoolEndpoint(pool, other)) {
+        duplicates.add(index);
+        duplicates.add(otherIndex);
+      }
+    });
+  });
+  return duplicates;
+}

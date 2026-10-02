@@ -3,6 +3,7 @@ import { Link } from 'wouter';
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Search, Play, Trash2 } from 'lucide-react';
 import { Alert, AlertTitle } from '@/components/ui/alert';
+import { ConnectionAlert } from '@/components/ui/connection-alert';
 import { InfoPopover } from '@/components/ui/info-popover';
 import { MinerConnectionInfo } from '@/components/setup/MinerConnectionInfo';
 import { Shell } from '@/components/layout/Shell';
@@ -89,6 +90,7 @@ export function UnifiedDashboard() {
     mode: templateMode,
     poolName: configPoolName,
     configurationIssues,
+    isBackendError,
   } = useSetupStatus();
 
   // Header connection status (shared with Settings via hook)
@@ -543,6 +545,10 @@ export function UnifiedDashboard() {
       activePoolAuthorityPublicKey={activePoolAuthorityPublicKey ?? undefined}
       uptime={uptime}
     >
+      {/* Backend connection error banner */}
+      {isBackendError && (
+        <ConnectionAlert isOrchestrated={isOrchestrated} className="mb-4" />
+      )}
 
       {/* Configuration recovery banner. This takes precedence over starting
           services because the backend deliberately keeps the stack stopped

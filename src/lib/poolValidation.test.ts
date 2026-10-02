@@ -9,7 +9,7 @@ import {
   getWorkerNameError,
   SRI_POOL_AUTHORITY_KEY,
 } from './miningIdentity';
-import { isPoolFormValid, isPoolComplete } from './poolValidation';
+import { hasDuplicatePoolEndpoints, isPoolFormValid, isPoolComplete } from './poolValidation';
 
 const NETWORK: BitcoinNetwork = 'mainnet';
 
@@ -72,7 +72,7 @@ test('isPoolFormValid blocks slash-containing stored identities without any repo
 test('isPoolFormValid validates primary and fallback pools with per-index reports', () => {
   const clean = buildSriIdentity(PAYOUT_ADDRESS, 'worker1', 0);
   const primary = makeSriSoloPool(clean);
-  const fallback = makeSriSoloPool(clean);
+  const fallback = { ...makeSriSoloPool(clean), address: 'sri-fallback.pool.example' };
 
   assert.equal(
     isPoolFormValid({
@@ -94,7 +94,7 @@ test('isPoolFormValid validates primary and fallback pools with per-index report
     'a reported error on a fallback pool blocks the form',
   );
 
-  const brokenFallback = makeSriSoloPool('');
+  const brokenFallback = { ...makeSriSoloPool(''), address: 'sri-fallback.pool.example' };
   assert.equal(
     isPoolFormValid({ pools: [primary, brokenFallback], miningMode: 'solo', network: NETWORK }),
     false,
@@ -155,4 +155,29 @@ test('reported errors gate every supported form mode without changing stored val
       `mode ${String(mode)}: valid stored identity passes`,
     );
   }
+});
+
+test('isPoolFormValid accepts multiple distinct custom pools and rejects duplicate endpoints', () => {
+  const primary = makeSriSoloPool(buildSriIdentity(PAYOUT_ADDRESS, '', 0));
+  const customA: PoolConfig = {
+    name: 'Custom Pool',
+    address: 'pool-a.example.com',
+    port: 3333,
+    authority_public_key: '9anrRNhBh7869XtNnFcCuGBRZP51E635qGbu457J5kHdszhfRc3',
+    user_identity: PAYOUT_ADDRESS,
+  };
+  const customB: PoolConfig = { ...customA, name: 'Custom Pool 2', address: 'pool-b.example.com' };
+  const customC: PoolConfig = { ...customA, name: 'Custom Pool 3', address: '10.0.0.5', port: 3334 };
+
+  assert.equal(
+    isPoolFormValid({ pools: [primary, customA, customB, customC], miningMode: 'solo', network: NETWORK }),
+    true,
+  );
+
+  const duplicate: PoolConfig = { ...customA, name: 'Custom Pool 4' };
+  assert.equal(hasDuplicatePoolEndpoints([primary, customA, duplicate]), true);
+  assert.equal(
+    isPoolFormValid({ pools: [primary, customA, duplicate], miningMode: 'solo', network: NETWORK }),
+    false,
+  );
 });

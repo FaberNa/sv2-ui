@@ -3,6 +3,8 @@ import { useLocation } from 'wouter';
 import { useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
+import { ConnectionAlert } from '@/components/ui/connection-alert';
 import { Badge } from '@/components/ui/badge';
 import { PoolIcon } from '@/components/ui/pool-icon';
 import { HashrateInput } from '@/components/ui/hashrate-input';
@@ -28,9 +30,12 @@ import {
   normalizePoolPriorityIdentities,
 } from '@/lib/miningIdentity';
 import {
+  getBitcoinAddressError,
+  getBitcoinAddressPlaceholder,
   getIdentifierError,
   formatHashrate,
   isTomlSafeIdentifier,
+  isValidBitcoinAddress,
 } from '@/lib/utils';
 import { clearDashboardClientState } from '@/lib/dashboardState';
 import { isPoolFormValid } from '@/lib/poolValidation';
@@ -59,7 +64,7 @@ import { FieldError } from '@/components/ui/field-error';
 import { StatusDot } from '@/components/ui/status-dot';
 const SETUP_TARGET_STEP_STORAGE_KEY = 'sv2-ui-setup-target-step';
 
-type EditingField = null | 'pools' | 'mode' | 'signature' | 'hashrate' | 'telemetry' | 'advanced';
+type EditingField = null | 'pools' | 'mode' | 'signature' | 'coinbaseAddress' | 'hashrate' | 'telemetry' | 'advanced';
 
 /**
  * Configuration tab for Settings page.
@@ -77,6 +82,8 @@ export function ConfigurationTab() {
     miningMode: statusMiningMode,
     mode: statusMode,
     activePoolIndex,
+    dockerError,
+    isBackendError,
   } = useSetupStatus();
   const {
     stop,
@@ -94,6 +101,7 @@ export function ConfigurationTab() {
   const [showFallbackIdentityFields, setShowFallbackIdentityFields] = useState(false);
   const [editMode, setEditMode] = useState<'jd' | 'no-jd' | null>(null);
   const [editSignature, setEditSignature] = useState<string>('');
+  const [editCoinbaseAddress, setEditCoinbaseAddress] = useState<string>('');
   const [editHashrate, setEditHashrate] = useState<number | null>(null);
   const [hashrateInputValid, setHashrateInputValid] = useState(true);
   const [editMinerTelemetryCidr, setEditMinerTelemetryCidr] = useState('');
@@ -179,6 +187,11 @@ export function ConfigurationTab() {
     setEditing('signature');
   };
 
+  const startEditCoinbaseAddress = () => {
+    setEditCoinbaseAddress(config?.jdc?.coinbase_reward_address ?? '');
+    setEditing('coinbaseAddress');
+  };
+
   const startEditHashrate = () => {
     if (!config?.translator) return;
     setEditHashrate(config.translator.min_hashrate || DEFAULT_MIN_HASHRATE);
@@ -203,6 +216,7 @@ export function ConfigurationTab() {
     setShowFallbackIdentityFields(false);
     setEditMode(null);
     setEditSignature('');
+    setEditCoinbaseAddress('');
     setEditHashrate(null);
     setHashrateInputValid(true);
     setEditMinerTelemetryCidr('');
@@ -221,6 +235,8 @@ export function ConfigurationTab() {
     reportedErrors: { 0: editPrimaryIdentityError, ...editFallbackIdentityErrors },
   });
   const isSignatureValid = editSignature === '' || isTomlSafeIdentifier(editSignature);
+  const trimmedCoinbaseAddress = editCoinbaseAddress.trim();
+  const isCoinbaseAddressValid = isValidBitcoinAddress(trimmedCoinbaseAddress, editNetwork);
   const isHashrateValid =
     hashrateInputValid &&
     editHashrate !== null &&
@@ -252,6 +268,9 @@ export function ConfigurationTab() {
     } else if (editing === 'signature') {
       if (!isSignatureValid || !config.jdc) return;
       updated.jdc = { ...config.jdc, jdc_signature: editSignature.trim() };
+    } else if (editing === 'coinbaseAddress') {
+      if (!isCoinbaseAddressValid || !config.jdc) return;
+      updated.jdc = { ...config.jdc, coinbase_reward_address: trimmedCoinbaseAddress };
     } else if (editing === 'hashrate') {
       if (!isHashrateValid || !config.translator || editHashrate === null) return;
       updated.translator = {
@@ -288,10 +307,12 @@ export function ConfigurationTab() {
     });
   };
 
-  // Not using orchestration backend
   if (!isOrchestrated) {
     return (
       <div className="space-y-6 animate-in slide-in-from-left-2 duration-300">
+        {isBackendError && (
+          <ConnectionAlert isOrchestrated={isOrchestrated} className="mb-6" />
+        )}
         <Card className="border-dashed">
           <CardContent className="pt-6">
             <div className="text-sm text-muted-foreground">
@@ -307,10 +328,12 @@ export function ConfigurationTab() {
     );
   }
 
-  // Not configured yet
   if (!isConfigured) {
     return (
       <div className="space-y-6 animate-in slide-in-from-left-2 duration-300">
+        {isBackendError && (
+          <ConnectionAlert isOrchestrated={isOrchestrated} className="mb-6" />
+        )}
         <Card className="border-primary/30 bg-primary/5">
           <CardContent className="pt-6">
             <div className="flex gap-3">
@@ -351,6 +374,7 @@ export function ConfigurationTab() {
     : isJdMode
       ? 'Custom Templates (Job Declaration)'
       : 'Pool Templates';
+  const coinbaseAddressLabel = isSovereignSolo ? 'Block Reward Address' : 'Solo Fallback Address';
   const pools = getPoolsForMode(activeMiningMode, activeMode);
   const isSaving = isSettingUp;
   const editPrimaryPool = editPools?.[0] ?? null;
@@ -375,6 +399,9 @@ export function ConfigurationTab() {
 
   return (
     <div className="space-y-6 animate-in slide-in-from-left-2 duration-300">
+      {isBackendError && (
+        <ConnectionAlert isOrchestrated={isOrchestrated} className="mb-6" />
+      )}
       {/* Status Banner */}
       <Card className={isRunning ? 'border-green-500/30 bg-green-500/5' : 'border-muted'}>
         <CardContent className="pt-6">
@@ -396,7 +423,7 @@ export function ConfigurationTab() {
                     variant="outline"
                     size="sm"
                     onClick={handleRestart}
-                    disabled={isStoppingOrRestarting}
+                    disabled={isStoppingOrRestarting || isBackendError}
                   >
                     {isStoppingOrRestarting ? (
                       <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Restarting...</>
@@ -408,7 +435,7 @@ export function ConfigurationTab() {
                     variant="outline"
                     size="sm"
                     onClick={handleStop}
-                    disabled={isStoppingOrRestarting}
+                    disabled={isStoppingOrRestarting || isBackendError}
                   >
                     {isStoppingOrRestarting ? (
                       <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Stopping...</>
@@ -421,7 +448,7 @@ export function ConfigurationTab() {
                 <Button
                   size="sm"
                   onClick={handleRestart}
-                  disabled={isStoppingOrRestarting}
+                  disabled={isStoppingOrRestarting || !!dockerError || isBackendError}
                   className="w-full sm:w-auto"
                 >
                   {isStoppingOrRestarting ? (
@@ -435,6 +462,13 @@ export function ConfigurationTab() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Docker Error Alert */}
+      {dockerError && (
+        <Alert variant="destructive">
+          <p>{dockerError}</p>
+        </Alert>
+      )}
 
       {/* Error Messages */}
       {(stopError || restartError || setupError) && (
@@ -717,6 +751,53 @@ export function ConfigurationTab() {
             />
           )}
 
+          {/* Fallback / block reward address (JD mode) */}
+          {isJdMode && config.jdc && (
+            <ConfigRow
+              label={coinbaseAddressLabel}
+              editing={editing === 'coinbaseAddress'}
+              onEdit={startEditCoinbaseAddress}
+              onSave={saveEdit}
+              onCancel={cancelEdit}
+              isSaving={isSaving}
+              saveDisabled={!isCoinbaseAddressValid}
+              disabled={editing !== null && editing !== 'coinbaseAddress'}
+              display={
+                <p className="text-muted-foreground font-mono text-xs truncate">
+                  {config.jdc.coinbase_reward_address || 'Not set'}
+                </p>
+              }
+              editContent={
+                <div>
+                  <label htmlFor="edit-coinbase-address" className="sr-only">
+                    {coinbaseAddressLabel}
+                  </label>
+                  <input
+                    id="edit-coinbase-address"
+                    type="text"
+                    value={editCoinbaseAddress}
+                    onChange={(e) => setEditCoinbaseAddress(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && isCoinbaseAddressValid && !isSaving) saveEdit();
+                      if (e.key === 'Escape') cancelEdit();
+                    }}
+                    autoFocus
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder={getBitcoinAddressPlaceholder(editNetwork)}
+                    className="w-full h-10 px-3 rounded-lg border border-input bg-background font-mono text-sm focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 outline-none transition-all"
+                  />
+                  <FieldError message={getBitcoinAddressError(trimmedCoinbaseAddress, editNetwork)} />
+                  <p className="text-xs text-muted-foreground mt-2">
+                    {isSovereignSolo
+                      ? 'Where the full block reward is paid when your node finds a block.'
+                      : 'Used for coinbase rewards if the Job Declarator falls back to solo mining due to pool connection issues.'}
+                  </p>
+                </div>
+              }
+            />
+          )}
+
           {/* Lowest worker hashrate */}
           {config.translator && (
             <ConfigRow
@@ -853,16 +934,6 @@ export function ConfigurationTab() {
               </div>
               <p className="text-muted-foreground font-mono text-xs truncate">
                 {config.bitcoin.socket_path}
-              </p>
-            </div>
-          )}
-
-          {/* Fallback Address (JD mode) */}
-          {isJdMode && config.jdc?.coinbase_reward_address && (
-            <div className="p-4 rounded-lg border border-border/50 bg-muted/20">
-              <p className="font-medium mb-1">{isSovereignSolo ? 'Block Reward Address' : 'Fallback Address'}</p>
-              <p className="text-muted-foreground font-mono text-xs truncate">
-                {config.jdc.coinbase_reward_address}
               </p>
             </div>
           )}

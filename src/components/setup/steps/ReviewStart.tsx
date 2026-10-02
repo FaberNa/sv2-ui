@@ -377,7 +377,7 @@ export function ReviewStart({ data, onComplete, onGoToStep }: ReviewStartProps) 
                   <span className="text-muted-foreground text-xs">
                     {isSovereignSolo
                       ? "Block Reward Address:"
-                      : "Fallback Address:"}
+                      : "Solo Fallback Address:"}
                   </span>{" "}
                   <span className="font-mono text-xs text-muted-foreground/70">
                     {data.jdc.coinbase_reward_address}

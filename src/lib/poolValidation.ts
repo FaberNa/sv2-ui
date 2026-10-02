@@ -1,5 +1,6 @@
 import type { BitcoinNetwork, MiningMode, PoolConfig } from '@sv2-ui/shared';
 import { getPoolIdentityError } from './miningIdentity';
+import { getDuplicatePoolEndpointIndexes } from './pools';
 import { isValidPoolAuthorityPubkey, isValidPoolAddress } from './utils';
 
 export function isPoolConnectionComplete(pool: PoolConfig | null | undefined): boolean {
@@ -14,6 +15,13 @@ export function isPoolConnectionComplete(pool: PoolConfig | null | undefined): b
     )) &&
     isValidPoolAuthorityPubkey(pool.authority_public_key),
   );
+}
+
+// True if any two pools share the same address and port.
+export function hasDuplicatePoolEndpoints(
+  pools: Array<PoolConfig | null | undefined>,
+): boolean {
+  return getDuplicatePoolEndpointIndexes(pools).size > 0;
 }
 
 export function isPoolComplete(
@@ -49,6 +57,7 @@ export function isPoolFormValid({
   reportedErrors,
 }: PoolFormValidityInput): boolean {
   if (pools.length === 0) return false;
+  if (hasDuplicatePoolEndpoints(pools)) return false;
 
   return pools.every((pool, index) => (
     isPoolComplete(pool, miningMode, network) && !reportedErrors?.[index]

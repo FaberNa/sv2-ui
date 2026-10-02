@@ -10,7 +10,12 @@ import {
   type KnownPool,
 } from '@/lib/pools';
 import { normalizePoolPriorityIdentities } from '@/lib/miningIdentity';
-import { isPoolComplete, isPoolConnectionComplete, isPoolFormValid } from '@/lib/poolValidation';
+import {
+  hasDuplicatePoolEndpoints,
+  isPoolComplete,
+  isPoolConnectionComplete,
+  isPoolFormValid,
+} from '@/lib/poolValidation';
 
 function poolMatchesPreset(pool: PoolConfig | null | undefined, preset: KnownPool): boolean {
   return isSameTrustedPool(pool, preset);
@@ -71,7 +76,8 @@ export function PoolConfigStep({ data, updateData, onNext }: PoolConfigStepProps
 
   const poolSelectionValid =
     selectedPools.length > 0 &&
-    selectedPools.every(isPoolConnectionComplete);
+    selectedPools.every(isPoolConnectionComplete) &&
+    !hasDuplicatePoolEndpoints(selectedPools);
   const primaryPoolValid = isPoolComplete(primaryPool, data.miningMode, network);
   const fallbackPoolsValid = fallbackPools.every((pool) => isPoolComplete(pool, data.miningMode, network));
   // Identity fields report blocking errors (e.g. a raw worker name that gets
@@ -162,7 +168,7 @@ export function PoolConfigStep({ data, updateData, onNext }: PoolConfigStepProps
           Select Pools
         </h2>
         <p className="mt-3 text-sm text-muted-foreground">
-          Select one pool as primary. Select more pools to add fallbacks, then drag selected pools to reorder priority.
+          Pick a primary pool and add more as fallbacks. Drag to change the order.
         </p>
       </div>
 

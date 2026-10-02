@@ -23,6 +23,8 @@ import { bitcoinSocketValidatorScript } from './bitcoin-socket-validator.js';
 import { bitcoinSocketExistsScript } from './bitcoin-socket-exists.js';
 import { bitcoinRpcValidatorScript } from './bitcoin-rpc-validator.js';
 
+export const DOCKER_CALL_TIMEOUT_MS = 10000;
+
 
 /**
  * Expand ~ to home directory in a path.
@@ -133,34 +135,71 @@ export function normalizeDockerError(error: unknown): Error {
   }
 
   const code = (error as NodeJS.ErrnoException).code;
-  const isTransportError = typeof code === 'string' && !('statusCode' in error);
+  const isTransportError = (typeof code === 'string' && !('statusCode' in error)) || ('level' in error);
   
   if (!isTransportError) {
+    // Only intercept 404s that lack a Docker-shaped JSON body, to avoid swallowing missing image/container errors
+    if (
+      typeof error === 'object' && error !== null &&
+      'statusCode' in error && (error as { statusCode?: unknown }).statusCode === 404 &&
+      typeof (error as { json?: { message?: unknown } }).json?.message !== 'string'
+    ) {
+      return new DockerConnectionError(
+        `The endpoint at ${dockerConnection.endpoint} (${dockerConnection.source}) is not a Docker daemon (HTTP 404).`,
+        { cause: error }
+      );
+    }
     return error as Error;
   }
 
   const endpoint = dockerConnection.endpoint;
   const source = dockerConnection.source;
 
-  if (code === 'EACCES' || code === 'EPERM') {
+  if (code === 'ABORT_ERR') {
     return new DockerConnectionError(
-      `Permission denied when accessing Docker at ${endpoint} (${source}). ` +
-      `Check file permissions or ensure your user is in the 'docker' group.`,
+      `Docker did not respond within ${DOCKER_CALL_TIMEOUT_MS / 1000} s at ${endpoint} (${source}). ` +
+      `Ensure Docker Engine or Docker Desktop is running and responsive.`,
       { cause: error }
     );
   }
 
-  const availableSockets = listAvailableDockerSockets().filter(s => s !== endpoint);
-  
-  let helpText = 'Ensure Docker Engine or Docker Desktop is running.';
-  if (availableSockets.length > 0) {
-    helpText += ` Other available sockets found: ${availableSockets.join(', ')}. Try setting DOCKER_SOCKET_PATH to one of these.`;
+  let helpText = '';
+  const isSSH = ('level' in error) || endpoint.startsWith('ssh://');
+  const isSocket = 'socketPath' in dockerConnection.options;
+
+  if (isSSH) {
+    helpText = 'Ensure the SSH user, key, and host are correct and that the remote Docker daemon is accessible.';
   } else {
-    helpText += ` Or check your DOCKER_SOCKET_PATH / DOCKER_HOST endpoint.`;
+    helpText = 'Ensure Docker Engine or Docker Desktop is running.';
+    const availableSockets = listAvailableDockerSockets().filter(s => s !== endpoint);
+    
+    if (isRunningInsideDocker()) {
+      if (isSocket) {
+        helpText += ' Also ensure the socket volume is mounted into this container.';
+      } else {
+        helpText += ' Also ensure the endpoint is accessible from within the container.';
+      }
+    } else if (availableSockets.length > 0) {
+      helpText += ` Other available sockets found: ${availableSockets.join(', ')}. Try setting DOCKER_SOCKET_PATH to one of these.`;
+    } else {
+      helpText += ' Or check your DOCKER_SOCKET_PATH / DOCKER_HOST endpoint.';
+    }
   }
 
+  if (code === 'EACCES' || code === 'EPERM') {
+    let permText = `Check file permissions or ensure your user is in the 'docker' group.`;
+    if (isRunningInsideDocker()) {
+      permText += ` If mounted as a volume, check mount permissions.`;
+    }
+    return new DockerConnectionError(
+      `Permission denied when accessing Docker at ${endpoint} (${source}). ${permText}`,
+      { cause: error }
+    );
+  }
+
+  const reasonCode = code || (error as { level?: string }).level || 'unknown';
   return new DockerConnectionError(
-    `Docker is not reachable at ${endpoint} (${source}) [${code}]. ${helpText}`,
+    `Docker is not reachable at ${endpoint} (${source}) [${reasonCode}]. ${helpText}`,
     { cause: error }
   );
 }
@@ -187,19 +226,13 @@ const TRANSLATOR_CONTAINER = CONTAINER_NAMES.translator;
 const JDC_CONTAINER = CONTAINER_NAMES.jdc;
 const DOCKER_LOG_HEADER_SIZE = 8;
 
-/**
- * Detect if we're running inside a Docker container.
- * When in Docker, we use shared volumes instead of host bind mounts.
- */
-const isRunningInDocker = fs.existsSync('/.dockerenv');
-
 export function getDockerConnectionInfo(): DockerConnectionConfig {
   refreshDockerConnection();
   return dockerConnection;
 }
 
 export function isRunningInsideDocker(): boolean {
-  return isRunningInDocker;
+  return fs.existsSync('/.dockerenv');
 }
 
 export type BitcoinSocketValidationResult =
@@ -629,7 +662,7 @@ export async function readContainerLogs(
 
   try {
     const dockerContainer = docker.getContainer(LOG_CONTAINER_NAMES[container]);
-    const info = await dockerContainer.inspect();
+    const info = await dockerContainer.inspect({ abortSignal: AbortSignal.timeout(DOCKER_CALL_TIMEOUT_MS) });
     const startTime = info.State?.StartedAt;
 
     const logOptions: Docker.ContainerLogsOptions & { follow: false } = {
@@ -760,7 +793,7 @@ async function removeContainer(name: string): Promise<void> {
 async function getContainerStatus(name: string): Promise<ContainerStatus | null> {
   try {
     const container = docker.getContainer(name);
-    const info = await container.inspect();
+    const info = await container.inspect({ abortSignal: AbortSignal.timeout(DOCKER_CALL_TIMEOUT_MS) });
 
     let status: HealthStatus = 'stopped';
     if (info.State.Running) {
@@ -796,7 +829,7 @@ async function getContainerStatus(name: string): Promise<ContainerStatus | null>
 async function startTranslator(configPath: string, image: string): Promise<void> {
   await removeContainer(TRANSLATOR_CONTAINER);
 
-  const binds = isRunningInDocker
+  const binds = isRunningInsideDocker()
     ? [`${CONFIG_VOLUME}:/config:ro`]
     : [`${configPath}:/config/translator.toml:ro`];
 
@@ -842,7 +875,7 @@ async function startJdc(
   // must target the path JDC actually opens.
   const containerSocketPath = getJdcContainerSocketPath(network);
 
-  const binds = isRunningInDocker
+  const binds = isRunningInsideDocker()
     ? [
       `${CONFIG_VOLUME}:/config:ro`,
       `${bitcoinSocketPath}:${containerSocketPath}:ro`,
@@ -953,13 +986,19 @@ export async function getStackStatus(mode: 'jd' | 'no-jd' | null): Promise<{
   return { translator, jdc };
 }
 
+function pingDocker(): Promise<void> {
+  return (docker.ping as (opts: { abortSignal: AbortSignal }) => Promise<void>)({
+    abortSignal: AbortSignal.timeout(DOCKER_CALL_TIMEOUT_MS),
+  });
+}
+
 /**
  * Check if Docker is available
  */
 export async function isDockerAvailable(): Promise<boolean> {
   try {
     refreshDockerConnection();
-    await docker.ping();
+    await pingDocker();
     return true;
   } catch {
     return false;
@@ -969,7 +1008,7 @@ export async function isDockerAvailable(): Promise<boolean> {
 export async function ensureDockerAvailable(): Promise<void> {
   try {
     refreshDockerConnection();
-    await docker.ping();
+    await pingDocker();
   } catch (error) {
     throw normalizeDockerError(error);
   }

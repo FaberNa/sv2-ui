@@ -1,5 +1,5 @@
-import { useEffect, useRef, useCallback } from 'react';
-import { Download } from 'lucide-react';
+import { useLayoutEffect, useRef, useCallback, useState } from 'react';
+import { Download, Pause, Play } from 'lucide-react';
 import type { ContainerLogLine } from '@/types/log-diagnostics';
 import { cn } from '@/lib/utils';
 
@@ -36,22 +36,38 @@ function getLogColorClass(line: ContainerLogLine) {
 
 export function ContainerLogsPanel({ lines, isLoading, isJdMode }: ContainerLogsPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const userScrolledUp = useRef(false);
+  // While paused, render a frozen snapshot so the user can read/scroll back
+  // without new lines shifting the view.
+  const [pausedLines, setPausedLines] = useState<ContainerLogLine[] | null>(null);
+  const isPaused = pausedLines !== null;
+  const visibleLines = pausedLines ?? lines;
+  // Only a pause caused by scrolling is undone by scrolling back down;
+  // a pause from the button waits for Resume.
+  const pausedByScroll = useRef(false);
 
+  const togglePause = () => {
+    pausedByScroll.current = false;
+    setPausedLines(isPaused ? null : lines);
+  };
+
+  // Scrolling up pauses; scrolling back to the very bottom resumes.
   const handleScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    userScrolledUp.current = !atBottom;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (!isPaused && distanceFromBottom > 40) {
+      pausedByScroll.current = true;
+      setPausedLines(lines);
+    } else if (isPaused && pausedByScroll.current && distanceFromBottom < 2) {
+      setPausedLines(null);
+    }
   };
 
-  // Auto-scroll to bottom when new lines arrive unless the user scrolled up
-  useEffect(() => {
-    if (!userScrolledUp.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [lines]);
+  // Follow the latest lines while live (also jumps to the end on resume).
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && !isPaused) el.scrollTop = el.scrollHeight;
+  }, [visibleLines, isPaused]);
 
   const handleDownload = useCallback(async () => {
     try {
@@ -73,7 +89,7 @@ export function ContainerLogsPanel({ lines, isLoading, isJdMode }: ContainerLogs
     }
   }, []);
 
-  if (isLoading && lines.length === 0) {
+  if (isLoading && visibleLines.length === 0) {
     return (
       <div className="h-48 flex items-center justify-center rounded-md bg-black/80 text-zinc-500 text-xs font-mono">
         Loading logs…
@@ -81,7 +97,7 @@ export function ContainerLogsPanel({ lines, isLoading, isJdMode }: ContainerLogs
     );
   }
 
-  if (lines.length === 0) {
+  if (visibleLines.length === 0) {
     return (
       <div className="h-48 flex items-center justify-center rounded-md bg-black/80 text-zinc-500 text-xs font-mono">
         No log output yet. Services may not be running.
@@ -91,7 +107,18 @@ export function ContainerLogsPanel({ lines, isLoading, isJdMode }: ContainerLogs
 
   return (
     <div className="space-y-1">
-      <div className="flex justify-end">
+      <div className="flex items-center justify-end gap-1">
+        <button
+          onClick={togglePause}
+          className={cn(
+            'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors hover:bg-muted/40',
+            isPaused ? 'text-amber-700 dark:text-yellow-400' : 'text-muted-foreground hover:text-foreground'
+          )}
+          title={isPaused ? 'Resume live logs and jump to latest' : 'Pause auto-scroll'}
+        >
+          {isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+          {isPaused ? 'Resume' : 'Pause'}
+        </button>
         <button
           onClick={handleDownload}
           className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
@@ -104,9 +131,9 @@ export function ContainerLogsPanel({ lines, isLoading, isJdMode }: ContainerLogs
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="h-72 overflow-y-auto rounded-md bg-black/80 p-3 font-mono text-xs leading-relaxed"
+        className="h-[70vh] min-h-72 overflow-y-auto rounded-md bg-black/80 p-3 font-mono text-xs leading-relaxed"
       >
-        {lines.map((line, i) => (
+        {visibleLines.map((line, i) => (
           <div
             key={`${line.container}-${line.timestamp ?? ''}-${i}`}
             className={cn(
@@ -134,7 +161,6 @@ export function ContainerLogsPanel({ lines, isLoading, isJdMode }: ContainerLogs
             <span className="break-all">{line.message}</span>
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
     </div>
   );

@@ -5,7 +5,7 @@ const MAX_POOL_NAME_LENGTH = 128;
 const MAX_POOL_ADDRESS_LENGTH = 255;
 const MAX_AUTHORITY_KEY_LENGTH = 128;
 const MAX_IDENTITY_LENGTH = 512;
-export const MAX_FALLBACK_POOLS = 16;
+export { MAX_FALLBACK_POOLS } from '@sv2-ui/shared';
 
 function isSafeBoundedString(value: unknown, maxLength: number): value is string {
   return typeof value === 'string' &&

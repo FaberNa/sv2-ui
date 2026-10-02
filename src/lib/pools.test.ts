@@ -8,6 +8,9 @@ import {
   isSameTrustedPool,
   hasSameEndpoint,
   isDuplicatePoolEndpoint,
+  createEmptyCustomPool,
+  getNextCustomPoolName,
+  getDuplicatePoolEndpointIndexes,
 } from './pools';
 import { isValidPoolAuthorityPubkey } from './utils';
 
@@ -108,4 +111,41 @@ test('isDuplicatePoolEndpoint collapses same-endpoint entries regardless of key'
   assert.equal(isDuplicatePoolEndpoint(correct, wrongKey), true,
     'a wrong-key entry at a known endpoint is still a duplicate and must not be re-added');
   assert.equal(isDuplicatePoolEndpoint(correct, { ...correct, port: 3334 }), false);
+});
+
+test('getNextCustomPoolName gives each additional custom pool a unique name', () => {
+  assert.equal(getNextCustomPoolName([]), 'Custom Pool');
+
+  const first = createEmptyCustomPool('', getNextCustomPoolName([]));
+  const second = createEmptyCustomPool('', getNextCustomPoolName([first]));
+  const third = createEmptyCustomPool('', getNextCustomPoolName([first, second]));
+
+  assert.deepEqual([first.name, second.name, third.name], ['Custom Pool', 'Custom Pool 2', 'Custom Pool 3']);
+});
+
+test('getNextCustomPoolName reuses the lowest free suffix', () => {
+  const remaining = [{ name: 'Custom Pool' }, { name: 'Custom Pool 3' }];
+
+  assert.equal(getNextCustomPoolName(remaining), 'Custom Pool 2');
+  assert.equal(getNextCustomPoolName([{ name: 'Custom Pool 2' }]), 'Custom Pool',
+    'the unsuffixed name is reused once it is free');
+});
+
+test('getDuplicatePoolEndpointIndexes allows several empty custom pools', () => {
+  const pools = [createEmptyCustomPool(), createEmptyCustomPool('', 'Custom Pool 2'), createEmptyCustomPool('', 'Custom Pool 3')];
+
+  assert.equal(getDuplicatePoolEndpointIndexes(pools).size, 0);
+});
+
+test('getDuplicatePoolEndpointIndexes flags every pool sharing an endpoint', () => {
+  const preset = knownPoolToConfig(SOLO_POOLS[0]);
+  const pools = [
+    { ...createEmptyCustomPool(), address: 'Pool.Example.com', port: 3333 },
+    preset,
+    { ...createEmptyCustomPool('', 'Custom Pool 2'), address: 'pool.example.com', port: 3333 },
+    { ...createEmptyCustomPool('', 'Custom Pool 3'), address: 'pool.example.com', port: 4444 },
+  ];
+
+  assert.deepEqual([...getDuplicatePoolEndpointIndexes(pools)].sort(), [0, 2],
+    'same address (case-insensitive) and port is a duplicate; a different port is not');
 });

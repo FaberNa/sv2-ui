@@ -1,10 +1,12 @@
 import { useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, GripVertical, X } from 'lucide-react';
-import { DEFAULT_POOL_PORT, type MiningMode, type PoolConfig } from '@sv2-ui/shared';
+import { ArrowDown, ArrowUp, GripVertical, Plus, X } from 'lucide-react';
+import { DEFAULT_POOL_PORT, MAX_FALLBACK_POOLS, type MiningMode, type PoolConfig } from '@sv2-ui/shared';
 import { FieldError } from '@/components/ui/field-error';
 import { PoolIcon } from '@/components/ui/pool-icon';
 import {
   createEmptyCustomPool,
+  getDuplicatePoolEndpointIndexes,
+  getNextCustomPoolName,
   hasSameEndpoint,
   isDuplicatePoolEndpoint,
   isSameTrustedPool,
@@ -13,6 +15,19 @@ import {
 } from '@/lib/pools';
 import { withCompatiblePoolIdentity } from '@/lib/miningIdentity';
 import { getPoolAuthorityPubkeyError, getPoolAddressError, stripWrappingQuotes } from '@/lib/utils';
+
+// Primary + fallbacks.
+const MAX_SELECTED_POOLS = MAX_FALLBACK_POOLS + 1;
+
+const DUPLICATE_ENDPOINT_MESSAGE = 'This pool is already in your list.';
+
+// Stable React keys for pool rows. Keying by index would make per-row state
+// (like the "address touched" flag) jump to another pool after a remove or move.
+let nextRowId = 0;
+function createRowId(): string {
+  nextRowId += 1;
+  return `pool-row-${nextRowId}`;
+}
 
 interface PoolPriorityEditorProps {
   presets: KnownPool[];
@@ -36,7 +51,13 @@ export function PoolPriorityEditor({
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const draggedIndexRef = useRef<number | null>(null);
-  const selectedCustomIndex = pools.findIndex((pool) => !getSelectedPreset(pool, presets));
+  const [rowIds, setRowIds] = useState<string[]>(() => pools.map(createRowId));
+  // The parent replaced the list (e.g. loaded a saved config), so reset the ids.
+  if (rowIds.length !== pools.length) {
+    setRowIds(pools.map(createRowId));
+  }
+  const canAddPool = pools.length < MAX_SELECTED_POOLS;
+  const duplicateEndpointIndexes = getDuplicatePoolEndpointIndexes(pools);
   const unselectedPresets = presets.filter((preset) => (
     !pools.some((selectedPool) => isDuplicatePoolEndpoint(selectedPool, preset))
   ));
@@ -44,12 +65,13 @@ export function PoolPriorityEditor({
   const togglePreset = (preset: KnownPool) => {
     const selectedIndex = pools.findIndex((pool) => hasSameEndpoint(pool, preset));
     if (selectedIndex >= 0) {
-      onChange(pools.filter((_, index) => index !== selectedIndex));
+      removePool(selectedIndex);
       return;
     }
 
-    if (preset.badge === 'coming-soon') return;
+    if (preset.badge === 'coming-soon' || !canAddPool) return;
 
+    setRowIds([...rowIds, createRowId()]);
     onChange([
       ...pools,
       withCompatiblePoolIdentity(
@@ -60,17 +82,15 @@ export function PoolPriorityEditor({
     ]);
   };
 
-  const toggleCustomPool = () => {
-    if (selectedCustomIndex >= 0) {
-      onChange(pools.filter((_, index) => index !== selectedCustomIndex));
-      return;
-    }
+  const addCustomPool = () => {
+    if (!canAddPool) return;
 
+    setRowIds([...rowIds, createRowId()]);
     onChange([
       ...pools,
       withCompatiblePoolIdentity(
         pools[0],
-        createEmptyCustomPool(),
+        createEmptyCustomPool('', getNextCustomPoolName(pools)),
         miningMode,
       ),
     ]);
@@ -80,9 +100,10 @@ export function PoolPriorityEditor({
     onChange(pools.map((item, itemIndex) => itemIndex === index ? pool : item));
   };
 
-  const removePool = (index: number) => {
+  function removePool(index: number) {
+    setRowIds(rowIds.filter((_, itemIndex) => itemIndex !== index));
     onChange(pools.filter((_, itemIndex) => itemIndex !== index));
-  };
+  }
 
   const movePool = (fromIndex: number, toIndex: number) => {
     if (fromIndex === toIndex || toIndex < 0 || toIndex >= pools.length) return;
@@ -90,6 +111,12 @@ export function PoolPriorityEditor({
     const nextPools = [...pools];
     const [movedPool] = nextPools.splice(fromIndex, 1);
     nextPools.splice(toIndex, 0, movedPool);
+
+    const nextRowIds = [...rowIds];
+    const [movedRowId] = nextRowIds.splice(fromIndex, 1);
+    nextRowIds.splice(toIndex, 0, movedRowId);
+
+    setRowIds(nextRowIds);
     onChange(nextPools);
   };
 
@@ -108,10 +135,11 @@ export function PoolPriorityEditor({
         const preset = getSelectedPreset(pool, presets);
         const isCustom = !preset;
         const displayName = preset?.name ?? pool.name ?? 'Custom Pool';
+        const isDuplicateEndpoint = duplicateEndpointIndexes.has(index);
 
         return (
           <div
-            key={`selected-pool-${index}`}
+            key={rowIds[index] ?? `selected-pool-${index}`}
             onDragEnter={() => {
               if (draggedIndexRef.current !== null && draggedIndexRef.current !== index) {
                 setDragOverIndex(index);
@@ -128,6 +156,8 @@ export function PoolPriorityEditor({
             className={`rounded-xl border bg-card transition-colors ${
               dragOverIndex === index && draggedIndex !== index
                 ? 'border-primary bg-primary/[0.04]'
+                : isDuplicateEndpoint
+                ? 'border-destructive/70'
                 : 'border-primary/70'
             } ${draggedIndex === index ? 'opacity-60' : ''}`}
           >
@@ -216,15 +246,23 @@ export function PoolPriorityEditor({
                 pool={pool}
                 idPrefix={`custom-pool-${index}`}
                 isJdMode={isJdMode}
+                isDuplicateEndpoint={isDuplicateEndpoint}
                 onChange={(nextPool) => updatePool(index, nextPool)}
               />
+            )}
+
+            {/* Preset rows have no inputs, so show the duplicate error here. */}
+            {!isCustom && isDuplicateEndpoint && (
+              <div className="border-t border-border px-4 pb-3 pt-1">
+                <FieldError message="This pool is in your list twice. Remove one to continue." />
+              </div>
             )}
           </div>
         );
       })}
 
       {unselectedPresets.map((preset) => {
-        const isDisabled = preset.badge === 'coming-soon';
+        const isDisabled = preset.badge === 'coming-soon' || !canAddPool;
         return (
           <button
             key={preset.id}
@@ -271,18 +309,24 @@ export function PoolPriorityEditor({
         );
       })}
 
-      {selectedCustomIndex === -1 && (
-        <button
-          type="button"
-          onClick={toggleCustomPool}
-          aria-pressed="false"
-          className="group w-full p-5 rounded-xl border border-border bg-card transition-all text-left relative hover:border-primary/45 hover:bg-primary/[0.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-        >
-          <div className="pr-8">
-            <div className="font-medium text-sm">Custom Pool</div>
+      <button
+        type="button"
+        onClick={addCustomPool}
+        disabled={!canAddPool}
+        className="group w-full p-5 rounded-xl border border-dashed border-border bg-card transition-all text-left relative hover:border-primary/45 hover:bg-primary/[0.02] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+      >
+        <div className="flex items-center gap-3">
+          <Plus className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          <div>
+            <div className="font-medium text-sm">Add Custom Pool</div>
+            {!canAddPool && (
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                {`You've reached the limit of ${MAX_FALLBACK_POOLS} fallback pools.`}
+              </div>
+            )}
           </div>
-        </button>
-      )}
+        </div>
+      </button>
     </div>
   );
 }
@@ -291,11 +335,13 @@ function CustomPoolFields({
   pool,
   idPrefix,
   isJdMode,
+  isDuplicateEndpoint,
   onChange,
 }: {
   pool: PoolConfig;
   idPrefix: string;
   isJdMode: boolean;
+  isDuplicateEndpoint: boolean;
   onChange: (pool: PoolConfig) => void;
 }) {
   const [isAddressTouched, setIsAddressTouched] = useState(false);
@@ -313,10 +359,11 @@ function CustomPoolFields({
     onChange({ ...pool, [field]: normalized });
   };
   const pubkeyError = getPoolAuthorityPubkeyError(pool.authority_public_key);
-  
+
   const rawAddressError = getPoolAddressError(pool.address);
   const showAddressError = isAddressTouched || pool.address !== '';
-  const addressError = showAddressError ? rawAddressError : null;
+  const addressError = (showAddressError ? rawAddressError : null)
+    ?? (isDuplicateEndpoint ? DUPLICATE_ENDPOINT_MESSAGE : null);
 
   return (
     <div className="border-t border-border bg-muted/20 p-3">

@@ -25,14 +25,13 @@ export interface SetupStatus {
   };
 }
 
-/** Thrown when the backend is reachable but rejects us as unauthenticated. */
-export class UnauthenticatedError extends Error {
+/** Thrown when the backend is reachable but returned a 5xx error. */
+export class BackendError extends Error {
   constructor() {
-    super('Authentication required');
-    this.name = 'UnauthenticatedError';
+    super('Backend is struggling (5xx status)');
+    this.name = 'BackendError';
   }
 }
-
 /**
  * Fetch setup status from the backend.
  * Returns null if backend is not available (standalone mode).
@@ -40,7 +39,7 @@ export class UnauthenticatedError extends Error {
 async function fetchSetupStatus(): Promise<SetupStatus | null> {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 1500);
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     const response = await authFetch('/api/status', {
       signal: controller.signal,
@@ -49,55 +48,37 @@ async function fetchSetupStatus(): Promise<SetupStatus | null> {
 
     clearTimeout(timeoutId);
 
-    if (response.status === 401) {
-      throw new UnauthenticatedError();
-    }
-
     if (!response.ok) {
+      if (response.status >= 500) {
+        throw new BackendError();
+      }
       return null;
     }
 
     return response.json();
   } catch (error) {
-    if (error instanceof UnauthenticatedError || error instanceof AuthError) throw error;
+    if (error instanceof AuthError || error instanceof BackendError) throw error;
     // Backend not available - standalone mode
     return null;
   }
 }
 
-/**
- * Hook to check setup status.
- * 
- * Returns:
- * - isOrchestrated: true if running with orchestration backend
- * - isConfigured: true if setup has been completed
- * - isRunning: true if containers are running
- * - needsSetup: true if user should be redirected to /setup
- */
-export function useSetupStatus() {
-  const query = useQuery({
-    queryKey: ['setup-status'],
-    queryFn: fetchSetupStatus,
-    staleTime: 5000,
-    // Stop polling once the backend has told us we are unauthenticated;
-    // otherwise the login screen would emit a 401 every five seconds.
-    refetchInterval: (q) => (q.state.error instanceof UnauthenticatedError ? false : 5000),
-    retry: false,
-  });
-
-  const status = query.data;
-  const isUnauthenticated = query.error instanceof UnauthenticatedError;
+export function deriveSetupStatus(
+  status: SetupStatus | null | undefined,
+  error: Error | null,
+  isLoadingData: boolean,
+) {
+  const isUnauthenticated = error instanceof AuthError;
+  const isBackendError = error instanceof BackendError;
 
   // Consider loaded when: we have data, OR we have an error, OR query is not loading
-  // This ensures we don't get stuck in loading state
-  const isLoading = query.isLoading && !query.isError && status === undefined;
+  const isLoading = isLoadingData && !error && status === undefined;
 
   return {
     isLoading,
-    isError: query.isError,
-    // The backend is present but refused us; the caller must not treat this as
-    // standalone mode.
+    isError: !!error,
     isUnauthenticated,
+    isBackendError,
     // If status is null or undefined, we're in standalone mode (no backend)
     isOrchestrated: status !== null && status !== undefined,
     isConfigured: status?.configured ?? false,
@@ -116,6 +97,31 @@ export function useSetupStatus() {
     containers: status?.containers ?? { translator: null, jdc: null },
     // User needs setup if: orchestrated mode AND not yet configured
     needsSetup: status !== null && status !== undefined && !status.configured,
+  };
+}
+
+/**
+ * Hook to check setup status.
+ * 
+ * Returns:
+ * - isOrchestrated: true if running with orchestration backend
+ * - isConfigured: true if setup has been completed
+ * - isRunning: true if containers are running
+ * - needsSetup: true if user should be redirected to /setup
+ */
+export function useSetupStatus() {
+  const query = useQuery({
+    queryKey: ['setup-status'],
+    queryFn: fetchSetupStatus,
+    staleTime: 5000,
+    // Stop polling once the backend has told us we are unauthenticated;
+    // otherwise the login screen would emit a 401 every five seconds.
+    refetchInterval: (q) => (q.state.error instanceof AuthError ? false : 5000),
+    retry: false,
+  });
+
+  return {
+    ...deriveSetupStatus(query.data, query.error, query.isLoading),
     refetch: query.refetch,
   };
 }

@@ -17,11 +17,10 @@ export function isMissingContainerError(error: unknown): boolean {
       json?: { message?: string };
     };
 
-    if (
-      (candidate.statusCode === 404 && candidate.reason === 'no such container') ||
-      candidate.message?.includes('No such container') ||
-      candidate.json?.message?.includes('No such container')
-    ) {
+    const hasMessageStr = typeof candidate.message === 'string' && candidate.message.includes('No such container');
+    const hasJsonStr = typeof candidate.json?.message === 'string' && /no such container/i.test(candidate.json.message);
+
+    if (hasMessageStr || hasJsonStr) {
       return true;
     }
     current = candidate.cause;
